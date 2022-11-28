@@ -6,6 +6,8 @@ Implements an API for server-server communication, request management, etc.
 
 from __future__ import annotations
 from threading import Thread, Lock
+import pickle
+import time
 from socket import *
 
 BUFFER_SIZE = 4096 # Max bytes in the message buffer
@@ -88,6 +90,14 @@ class BulletinBoardServer():
             self.udp_send(header, message, node[0], node[1])
 
 
+    def client_handler(self, client_address: List[str,int]) -> None:
+        print("Client handler invoked",client_address)
+        with socket(AF_INET, SOCK_DGRAM) as udp_socket:
+            try:
+                udp_socket.sendto(b"ACK", client_address)
+            finally:
+                udp_socket.close()
+
 
     def udp_listener(self) -> None:
         # Listen for UDP messages and append to a global receive queue
@@ -100,11 +110,17 @@ class BulletinBoardServer():
                     # HEADER, MESSAGE, RECIPIENT, PORT, SENDERID
                     message, client_address = udp_socket.recvfrom(BUFFER_SIZE)
                     message = pickle.loads(message)
-                    # Lock the message queue and append the message
-                    queue_mutex.acquire()
-                    try:
-                        self.message_queue.append(message)
-                    finally:
-                        queue_mutex.release()
+
+                    if message["SENDERID"] == "CLIENT": # If a message from a client is received, handle it immediately and separately from server requests
+                        # Spawn a client handler thread
+                        client_handler = Thread(target=self.client_handler, args=(client_address,), name=f"client_handler{client_address}")
+                        client_handler.start()
+                    else: # Add to the queue when a message from another server is received
+                        # Lock the message queue and append the message
+                        queue_mutex.acquire()
+                        try:
+                            self.message_queue.append(message)
+                        finally:
+                            queue_mutex.release()
             finally:
                 udp_socket.close()
