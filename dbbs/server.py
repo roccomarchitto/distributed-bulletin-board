@@ -8,7 +8,9 @@ from __future__ import annotations
 from threading import Thread, Lock
 import pickle
 import time
+import os
 from socket import *
+
 
 BUFFER_SIZE = 4096 # Max bytes in the message buffer
 queue_mutex = Lock()
@@ -55,9 +57,11 @@ class BulletinBoardServer():
         self.udp_listener = Thread(target=self.udp_listener, name=f"udp_listener{self.uid}:{self.port}")
         self.udp_listener.start()
 
-        # Start the heartbeat tracker
+        # Start the heartbeat tracker and sender
         self.heartbeat_tracker = Thread(target=self.heartbeat_tracker, name=f"heartbeat_tracker{self.uid}:{self.port}")
         self.heartbeat_tracker.start() 
+        self.heartbeat_sender = Thread(target=self.heartbeat_sender, name=f"heartbeat_sender{self.uid}:{self.port}")
+        self.heartbeat_sender.start()
 
         print(f"Node {self.uid} is listening on port {self.port}")
 
@@ -66,28 +70,44 @@ class BulletinBoardServer():
         Keep track of heartbeats; if no heartbeat received within timeout, start a leader election
         """
         while True:
-            if (self.primary == self.uid):
-                print(f"{uid} IS LEADER SENDING HEARTBEATS!")
-            else:
-                while not self.primary == self.uid and (abs(time.time() - self.last_heartbeat) < self.max_timeout):
-                    continue
-                print("TIMEOUT DETECTED")
-                return
+            while (abs(time.time() - self.last_heartbeat) < self.max_timeout):
+                continue
+            print("TIMEOUT DETECTED")
+            time.sleep(0.2) # TODO FIX THIS WHOLE SECTION
+            self.hosts = self.hosts[:-1] # Remove current leader
+            self.neighbor_id = (self.uid+1)%len(self.hosts)
+            self.neighbor_hostname = self.hosts[self.neighbor_id][0]
+            self.neighbor_port = self.hosts[self.neighbor_id][1]
+            #print(f"{self.uid}: {self.hosts} sending to {self.neighbor_id}, {len(self.hosts)}")
+            self.udp_send("TOKEN",self.uid,self.neighbor_hostname,self.neighbor_port) 
+            # TODO update neighbors
 
-
+    def heartbeat_sender(self) -> None:
+        """
+        Periodically send heartbeats
+        """
+        count = 0 # For testing purposes
+        while True:
+            if (self.uid == self.primary) and count < 8: # TODO
+                time.sleep(0.2)
+                self.udp_broadcast("HEARTBEAT","")
+                print("HEARTBEAT SENT BY",self.uid)
+                count += 1
+            if count >= 8:
+                os._exit(0) # TODO simulate crash failure
 
     def queue_listener(self) -> None:
         """
         Main logic for handling incoming messages goes here.
         """
-        neighbor_id = (self.uid+1)%len(self.hosts)
-        neighbor_hostname = self.hosts[neighbor_id][0]
-        neighbor_port = self.hosts[neighbor_id][1]
+        self.neighbor_id = (self.uid+1)%len(self.hosts)
+        self.neighbor_hostname = self.hosts[self.neighbor_id][0]
+        self.neighbor_port = self.hosts[self.neighbor_id][1]
         if(self.init_process):
             time.sleep(0.5)
             #send a token w/ self ID to the next neighbor if an initiator process
-            print(f"sending first token for process {self.uid} to {neighbor_id}")
-            self.udp_send("TOKEN",self.uid,neighbor_hostname,neighbor_port)
+            print(f"sending first token for process {self.uid} to {self.neighbor_id}")
+            self.udp_send("TOKEN",self.uid,self.neighbor_hostname,self.neighbor_port)
 
         while True:
             if len(self.message_queue) > 0:
@@ -109,7 +129,7 @@ class BulletinBoardServer():
                         #When message recieved, just act as router
                         #Send token to next neightbor
                         print("Black router sending")
-                        self.udp_send("TOKEN",recv_id,neighbor_hostname,neighbor_port)
+                        self.udp_send("TOKEN",recv_id,self.neighbor_hostname,self.neighbor_port)
                         
                         #If it involves the final leader message, save it
                     else:
@@ -120,21 +140,21 @@ class BulletinBoardServer():
                         elif(recv_id == self.uid):
                             self.primary = self.uid
                             print(f"Node {self.uid} has received a token from itself (it set {self.primary} to the leader)")
-                            self.udp_send("LEADER",self.primary,neighbor_hostname,neighbor_port)
+                            self.udp_send("LEADER",self.primary,self.neighbor_hostname,self.neighbor_port)
                             self.color = "red" # TODO should this be here?
 
                         #If the received ID is greater than mine, turn black and forward the token
                         elif(recv_id > self.uid):
                             self.color = 'black'
-                            print(f"{recv_id} > {self.uid} (me) -> TURN BLACK, forward {recv_id} to {neighbor_port}")
+                            print(f"{recv_id} > {self.uid} (me) -> TURN BLACK, forward {recv_id} to {self.neighbor_port}")
                             #Then just pass the message onwards because this process quits
-                            self.udp_send("TOKEN",recv_id,neighbor_hostname,neighbor_port)
+                            self.udp_send("TOKEN",recv_id,self.neighbor_hostname,self.neighbor_port)
 
                 if message["HEADER"] == "LEADER":
                     if self.primary == -1:    
                         print("Node",self.uid,"has been notified that", message["MESSAGE"], "is the leader")
                         self.primary = message["MESSAGE"]
-                        self.udp_send("LEADER",self.primary,neighbor_hostname,neighbor_port)
+                        self.udp_send("LEADER",self.primary,self.neighbor_hostname,self.neighbor_port)
                         self.color = "red" # TODO should this be here?
                 
 
@@ -205,7 +225,8 @@ class BulletinBoardServer():
                     
                     elif message["HEADER"] == "HEARTBEAT":
                         # Update the heartbeat immediately, don't send to message queue
-                        self.last_heartbeat = time.time()  
+                        self.last_heartbeat = time.time()
+                        print("H @",self.uid,time.time())
 
                     else: # Add to the queue when a message from another server is received
                         # Lock the message queue and append the message
