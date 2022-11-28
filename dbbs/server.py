@@ -32,7 +32,18 @@ class BulletinBoardServer():
         
         self.message_queue = []
 
+        # Primary node variables
+        # Note Chang-Roberts is used for leader election
+        self.color = 'red'  # Red or black for Chang-Roberts
+        self.init_process = True # Wants to be leader
+        self.primary = -1
+        self.max_timeout = 3 # Maximum time between heartbeats before timeout occurs
+        self.last_heartbeat = time.time()
+
+        # Start the listeners
         self.node_initiate()
+
+        
 
 
     def node_initiate(self) -> None:
@@ -44,14 +55,90 @@ class BulletinBoardServer():
         self.udp_listener = Thread(target=self.udp_listener, name=f"udp_listener{self.uid}:{self.port}")
         self.udp_listener.start()
 
+        # Start the heartbeat tracker
+        self.heartbeat_tracker = Thread(target=self.heartbeat_tracker, name=f"heartbeat_tracker{self.uid}:{self.port}")
+        self.heartbeat_tracker.start() 
+
         print(f"Node {self.uid} is listening on port {self.port}")
+
+    def heartbeat_tracker(self) -> None:
+        """
+        Keep track of heartbeats; if no heartbeat received within timeout, start a leader election
+        """
+        while True:
+            if (self.primary == self.uid):
+                print(f"{uid} IS LEADER SENDING HEARTBEATS!")
+            else:
+                while not self.primary == self.uid and (abs(time.time() - self.last_heartbeat) < self.max_timeout):
+                    continue
+                print("TIMEOUT DETECTED")
+                return
+
 
 
     def queue_listener(self) -> None:
         """
         Main logic for handling incoming messages goes here.
         """
-        pass
+        neighbor_id = (self.uid+1)%len(self.hosts)
+        neighbor_hostname = self.hosts[neighbor_id][0]
+        neighbor_port = self.hosts[neighbor_id][1]
+        if(self.init_process):
+            time.sleep(0.5)
+            #send a token w/ self ID to the next neighbor if an initiator process
+            print(f"sending first token for process {self.uid} to {neighbor_id}")
+            self.udp_send("TOKEN",self.uid,neighbor_hostname,neighbor_port)
+
+        while True:
+            if len(self.message_queue) > 0:
+                # First get any messages
+                queue_mutex.acquire()
+                try:
+                    message = self.message_queue.pop(0)
+                finally:
+                    queue_mutex.release()
+
+                #print(message)
+
+                # Leader election messages
+                if message["HEADER"] == "TOKEN":
+                    recv_id = message["MESSAGE"] # The received ID
+                    print(f"Node {self.uid} received token {recv_id} from {message['SENDERID']}")
+
+                    if(self.color == "black"):
+                        #When message recieved, just act as router
+                        #Send token to next neightbor
+                        print("Black router sending")
+                        self.udp_send("TOKEN",recv_id,neighbor_hostname,neighbor_port)
+                        
+                        #If it involves the final leader message, save it
+                    else:
+                        #If the received ID is less than mine, skip (remove the token received)
+                        if(recv_id < self.uid):
+                            print(f"Discarding token {recv_id}")
+                        #If came back to this process, therefore, I am leader
+                        elif(recv_id == self.uid):
+                            self.primary = self.uid
+                            print(f"Node {self.uid} has received a token from itself (it set {self.primary} to the leader)")
+                            self.udp_send("LEADER",self.primary,neighbor_hostname,neighbor_port)
+                            self.color = "red" # TODO should this be here?
+
+                        #If the received ID is greater than mine, turn black and forward the token
+                        elif(recv_id > self.uid):
+                            self.color = 'black'
+                            print(f"{recv_id} > {self.uid} (me) -> TURN BLACK, forward {recv_id} to {neighbor_port}")
+                            #Then just pass the message onwards because this process quits
+                            self.udp_send("TOKEN",recv_id,neighbor_hostname,neighbor_port)
+
+                if message["HEADER"] == "LEADER":
+                    if self.primary == -1:    
+                        print("Node",self.uid,"has been notified that", message["MESSAGE"], "is the leader")
+                        self.primary = message["MESSAGE"]
+                        self.udp_send("LEADER",self.primary,neighbor_hostname,neighbor_port)
+                        self.color = "red" # TODO should this be here?
+                
+
+
 
     """
     Network interface methods
@@ -115,6 +202,11 @@ class BulletinBoardServer():
                         # Spawn a client handler thread
                         client_handler = Thread(target=self.client_handler, args=(client_address,), name=f"client_handler{client_address}")
                         client_handler.start()
+                    
+                    elif message["HEADER"] == "HEARTBEAT":
+                        # Update the heartbeat immediately, don't send to message queue
+                        self.last_heartbeat = time.time()  
+
                     else: # Add to the queue when a message from another server is received
                         # Lock the message queue and append the message
                         queue_mutex.acquire()
