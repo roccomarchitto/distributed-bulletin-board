@@ -9,6 +9,8 @@ from threading import Thread, Lock
 import pickle
 import time
 import os
+import random
+import json
 from socket import *
 
 
@@ -39,8 +41,20 @@ class BulletinBoardServer():
         self.color = 'red'  # Red or black for Chang-Roberts
         self.init_process = True # Wants to be leader
         self.primary = -1
-        self.max_timeout = 3 # Maximum time between heartbeats before timeout occurs
+        self.max_timeout = 10 # Maximum time between heartbeats before timeout occurs
         self.last_heartbeat = time.time()
+
+        # Bulletin board content variables
+        self.bulletin_board = ''
+        
+        sample_json = '{"articles": [{"id ": 5,"title": "x","contents": "y","replies": [{"id ": 6,"title": "xx","contents": "yy","replies": []}]}, {"hi":"ok"} ] }'
+        self.bulletin_board = json.loads(sample_json)
+        print(self.bulletin_board)
+        for i in self.bulletin_board['articles']:
+            print(i,'\n')
+        # TODO 
+        # len(bulletin_board['articles'][0]['replies']) is 1
+
 
         # Start the listeners
         self.node_initiate()
@@ -73,13 +87,18 @@ class BulletinBoardServer():
             while (abs(time.time() - self.last_heartbeat) < self.max_timeout):
                 continue
             print("TIMEOUT DETECTED")
+            self.primary = -1 # To be updated when new leader is elected
+            self.last_heartbeat = time.time() # Reset the timer
             time.sleep(0.2) # TODO FIX THIS WHOLE SECTION
             self.hosts = self.hosts[:-1] # Remove current leader
             self.neighbor_id = (self.uid+1)%len(self.hosts)
             self.neighbor_hostname = self.hosts[self.neighbor_id][0]
             self.neighbor_port = self.hosts[self.neighbor_id][1]
             #print(f"{self.uid}: {self.hosts} sending to {self.neighbor_id}, {len(self.hosts)}")
-            self.udp_send("TOKEN",self.uid,self.neighbor_hostname,self.neighbor_port) 
+            self.udp_send("TOKEN",self.uid,self.neighbor_hostname,self.neighbor_port)
+            if len(self.hosts) < 2:
+                print("Too few hosts to continue - exiting.")
+                os._exit(1)
             # TODO update neighbors
 
     def heartbeat_sender(self) -> None:
@@ -88,13 +107,12 @@ class BulletinBoardServer():
         """
         count = 0 # For testing purposes
         while True:
-            if (self.uid == self.primary) and count < 8: # TODO
-                time.sleep(0.2)
+            if (self.uid == self.primary): #and count < 3: # TODO
+                time.sleep(0.5)
                 self.udp_broadcast("HEARTBEAT","")
-                print("HEARTBEAT SENT BY",self.uid)
+                #print("HEARTBEAT SENT BY",self.uid)
                 count += 1
-            if count >= 8:
-                os._exit(0) # TODO simulate crash failure
+            
 
     def queue_listener(self) -> None:
         """
@@ -140,6 +158,7 @@ class BulletinBoardServer():
                         elif(recv_id == self.uid):
                             self.primary = self.uid
                             print(f"Node {self.uid} has received a token from itself (it set {self.primary} to the leader)")
+                            #time.sleep(.5) # For debug purposes, delay choice of new leader
                             self.udp_send("LEADER",self.primary,self.neighbor_hostname,self.neighbor_port)
                             self.color = "red" # TODO should this be here?
 
@@ -174,6 +193,10 @@ class BulletinBoardServer():
             port (int): The port of the recipient
         """
 
+        latency = random.random()*0.1
+        time.sleep(latency) # TODO client-sending latencies
+        # TODO BUG - when latency is set to 4, two leaders may be elected at the same time due to atomicity concerns (possible assumption?)
+
         # Serialize the message to byte form before sending
         message =   {
                         'HEADER': header,
@@ -197,11 +220,37 @@ class BulletinBoardServer():
             self.udp_send(header, message, node[0], node[1])
 
 
-    def client_handler(self, client_address: List[str,int]) -> None:
+    def client_handler(self, client_address: List[str,int], message: dict) -> None:
         print("Client handler invoked",client_address)
         with socket(AF_INET, SOCK_DGRAM) as udp_socket:
             try:
-                udp_socket.sendto(b"ACK", client_address)
+                print(message)
+                if message["HEADER"] == "CONN": # Client notified server that it connected
+                    udp_socket.sendto(b"ACK", client_address)
+                elif message["HEADER"] == "REQUEST": # Client is requesting the bulletin board TODO FIX
+                    self.bulletin_board['articles'].append("{'test':'OK'}")
+                    data = json.dumps(self.bulletin_board) # Convert dict to JSON for parsing
+                    data = pickle.dumps(data) # Encode JSON in byte form
+                    udp_socket.sendto(data, client_address)
+                elif message["HEADER"] == "PRIMARY-REQUEST":
+                    """
+                    These are requests made in sequential consistency mode. Send info back if leader, else send back leader, or spin wait until a leader is chosen.
+                    """
+                    # TODO is there a problem when a leader is being waited on too long?
+                    if (self.primary == self.uid):
+                        data = json.dumps(self.bulletin_board) # Convert dict to JSON for parsing
+                        data = pickle.dumps(data) # Encode JSON in byte form
+                        udp_socket.sendto(data, client_address)
+                    else:
+                        while self.primary == -1:
+                            continue
+                        # A leader is now chosen at this point; send its ID back to the client
+                        data = dict()
+                        data['primary'] = self.primary
+                        data = json.dumps(data)
+                        data = pickle.dumps(data)
+                        udp_socket.sendto(data, client_address)
+
             finally:
                 udp_socket.close()
 
@@ -220,13 +269,13 @@ class BulletinBoardServer():
 
                     if message["SENDERID"] == "CLIENT": # If a message from a client is received, handle it immediately and separately from server requests
                         # Spawn a client handler thread
-                        client_handler = Thread(target=self.client_handler, args=(client_address,), name=f"client_handler{client_address}")
+                        client_handler = Thread(target=self.client_handler, args=(client_address,message), name=f"client_handler{client_address}") # TODO does this allow for multiple threads? Are the non unique names a problem?
                         client_handler.start()
                     
                     elif message["HEADER"] == "HEARTBEAT":
                         # Update the heartbeat immediately, don't send to message queue
                         self.last_heartbeat = time.time()
-                        print("H @",self.uid,time.time())
+                        #print("H @",self.uid,time.time())
 
                     else: # Add to the queue when a message from another server is received
                         # Lock the message queue and append the message

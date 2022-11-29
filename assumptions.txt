@@ -1,0 +1,1 @@
+- Each time a leader crashes, the hosts simply shave off the highest ID node from the hosts list

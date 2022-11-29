@@ -10,6 +10,8 @@ from __future__ import annotations
 from threading import Thread, Lock
 import argparse
 import pickle
+import json
+import time
 from socket import *
 
 BUFFER_SIZE = 4096
@@ -18,8 +20,10 @@ BUFFER_SIZE = 4096
 parser = argparse.ArgumentParser()
 parser.add_argument("consistency", help="the consistency method requested by this client: sequential, quorum, or ryw")
 args = parser.parse_args()
-consistency = args.consistency
+CONSISTENCY = args.consistency
 # TODO - check consistency type, check other args in other places, have tests for these
+
+primary_server_id = 0 # For sequential consistency primary-backup protocol
 
 # Load the hosts array to see every server
 hosts = []
@@ -35,8 +39,10 @@ class BulletinBoardClient():
         self.server_hostname = ''
         self.server_port = ''
         self.choose_server(hosts)
+        self.consistency = consistency
         print("Choosing server", self.server_hostname, self.server_port)
-        self.udp_send("LOL", "hi", self.server_hostname, self.server_port)
+        initial_message = self.udp_send("CONN", "", self.server_hostname, self.server_port)
+        print(initial_message)
         
     
     def choose_server(self, hosts: List[List[str]]):
@@ -47,6 +53,41 @@ class BulletinBoardClient():
         self.server_hostname = server_choice[0]
         self.server_port = server_choice[1]
         # TODO
+
+
+
+    def request_data(self):
+        # Get the JSON of the bulletin board data, parse it into a Python dictionary, then send for front-end viewing
+        if self.consistency == "sequential":
+            query = pickle.loads(self.udp_send("PRIMARY-REQUEST", "", self.server_hostname, self.server_port))
+            data = json.loads(query)
+            if 'articles' in data: # The primary server has sent its data
+                self.view_data(data)
+            elif 'primary' in data: # The correct primary has been sent back, so reflect this and resend request
+                print("New primary:",data)
+                self.primary_server_id = data['primary']
+                self.server_hostname = hosts[self.primary_server_id][0]
+                self.server_port = hosts[self.primary_server_id][1]
+                self.request_data()
+            else:
+                raise Exception("Corrupt data from server:",data)
+    
+
+    def view_data(self, data, depth = -1):
+        if depth == -1:
+            self.view_data(data['articles'], depth+1)
+        else:
+            for article in data:
+                print('\t'*depth, end='')
+                if 'title' in article: # Needed because of testing purposes
+                    print(article['title'])
+                else:
+                    print(article)
+                if 'replies' in article:
+                    self.view_data(article['replies'], depth+1)
+        
+
+
 
 
     def udp_send(self, header: str, message, recipient: str, port: int) -> None:
@@ -79,7 +120,8 @@ class BulletinBoardClient():
                 # Now wait (with timeout) for a reply
                 # TODO timeout
                 reply, server_address = udp_socket.recvfrom(BUFFER_SIZE)
-                print("Client received reply:",reply)
+                #print("Client received reply:",reply)
+                return reply
             
             finally:
                 udp_socket.close()
@@ -90,5 +132,7 @@ class BulletinBoardClient():
 
 
 if __name__ == "__main__":
-    client_instance = BulletinBoardClient(consistency, hosts)
+    # NOTE - Some time wait is needed here for the servers to boot up
+    client_instance = BulletinBoardClient(CONSISTENCY, hosts)
     print("Hosts are:",hosts)
+    client_instance.request_data()
