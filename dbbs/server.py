@@ -15,6 +15,7 @@ from socket import *
 
 
 BUFFER_SIZE = 4096 # Max bytes in the message buffer
+DEBUG = True
 queue_mutex = Lock()
 
 class BulletinBoardServer():
@@ -56,6 +57,9 @@ class BulletinBoardServer():
         # TODO 
         # len(bulletin_board['articles'][0]['replies']) is 1
 
+        # Quorum consistency
+        self.read_quorum = [0, 2] # TODO choose a subset
+        self.write_quorum = [0, 2] # TODO choose a subset
 
         # Start the listeners
         self.node_initiate()
@@ -117,7 +121,7 @@ class BulletinBoardServer():
 
     def queue_listener(self) -> None:
         """
-        Main logic for handling incoming messages goes here.
+        Main logic for handling queue-based server-server messages.
         """
         self.neighbor_id = (self.uid+1)%len(self.hosts)
         self.neighbor_hostname = self.hosts[self.neighbor_id][0]
@@ -137,7 +141,49 @@ class BulletinBoardServer():
                 finally:
                     queue_mutex.release()
 
-                #print(message)
+                if message["HEADER"] == "QUORUM-READ-PRIMARY":
+                    if (self.primary == self.uid):
+                        if DEBUG: print("Primary received quorum read request")
+                        client_address = message["MESSAGE"]
+                        # Multicast request to quorum, find most up to date (by ID) bulletin, then send back to the client
+                        bulletins = []
+                        for server_id in self.read_quorum:
+                            hostname = self.hosts[server_id][0]
+                            port = self.hosts[server_id][1]
+                            msg =   {
+                                            'HEADER': 'QUORUM-READ-REQ',
+                                            'MESSAGE': '',
+                                            'RECIPIENT': hostname,
+                                            'PORT': int(port),
+                                            'SENDERID': self.uid
+                                        }
+                            msg = pickle.dumps(msg)
+                            # Manually send over UDP (since sending requirements differ here from the udp_send function)
+                            with socket(AF_INET, SOCK_DGRAM) as udp_socket:
+                                try:
+                                    udp_socket.sendto(msg, (hostname, int(port))) # TODO timeout here?
+                                    reply, server_address = udp_socket.recvfrom(BUFFER_SIZE)
+                                    quorum_reply = pickle.loads(reply)
+                                    bulletins.append(quorum_reply)
+                                finally:
+                                    udp_socket.close()
+
+                        # Now make another socket and send to the client
+                        with socket(AF_INET, SOCK_DGRAM) as udp_socket:
+                            data = pickle.dumps(bulletins[0]) # TODO choose bulletin w/ highest ID
+                            curr_max_id = 0
+                            curr_max_bulletin = bulletins[0]
+                            for bulletin in bulletins:
+                                highest_id = self.find_highest_id(json.loads(bulletin))
+                                if highest_id > curr_max_id:
+                                    print("OVERRIDE",bulletin,curr_max_bulletin)
+                                    curr_max_bulletin = bulletin
+                                    curr_max_id = highest_id
+                            udp_socket.sendto(pickle.dumps(curr_max_bulletin), client_address)
+                        
+                    else:
+                        raise Exception("Inconsistent primaries")
+
 
                 # Leader election messages
                 if message["HEADER"] == "TOKEN":
@@ -176,7 +222,7 @@ class BulletinBoardServer():
                         self.primary = message["MESSAGE"]
                         self.udp_send("LEADER",self.primary,self.neighbor_hostname,self.neighbor_port)
                         self.color = "red" # TODO should this be here?
-                
+
 
 
 
@@ -222,6 +268,9 @@ class BulletinBoardServer():
 
 
     def client_handler(self, client_address: List[str,int], message: dict) -> None:
+        """
+        Handle requests from clients rather than servers here.
+        """
         print("Client handler invoked",client_address)
         with socket(AF_INET, SOCK_DGRAM) as udp_socket:
             try:
@@ -318,8 +367,21 @@ class BulletinBoardServer():
                         data = pickle.dumps(data)
                         udp_socket.sendto(data, client_address) 
 
+
+                ### QUORUM CONSISTENCY CLIENT REQUESTS
+
+                elif message["HEADER"] == "QUORUM-READ":
+                    print("Quorum read on server requested")
+                    # Send a message to the primary -> primary sends a message back with data
+                    self.udp_send("QUORUM-READ-PRIMARY", client_address, self.hosts[self.primary][0], self.hosts[self.primary][1])
+
+
+
             finally:
                 udp_socket.close()
+
+
+    # Bulletin methods TODO: Reorganize
 
     def append_reply(self, id, reply, current_section, depth = -1) -> None:
         # Recursively append a reply to article ID id, to the self bulletin
@@ -334,6 +396,21 @@ class BulletinBoardServer():
                 self.append_reply(id, reply, article['replies'], depth+1)
               
 
+
+    def find_highest_id(self, current_section, depth = -1) -> None:
+        # Recursively find the highest ID in the bulletin board
+        if depth == -1:
+            return self.find_highest_id(current_section['articles'], depth+1)
+        else:
+            id_list = []
+            for article in current_section:
+                if not article['replies']:
+                    return current_section[0]['id']
+                id_list.append(int(self.find_highest_id(article['replies'], depth+1)))
+                id_list.append(int(current_section[0]['id']))
+            print("ID List:",id_list)
+            return max(id_list)
+                
 
 
     def udp_listener(self) -> None:
@@ -357,6 +434,11 @@ class BulletinBoardServer():
                         # Update the heartbeat immediately, don't send to message queue
                         self.last_heartbeat = time.time()
                         #print("H @",self.uid,time.time())
+                    
+                    # Quorum requests are handled here rather than in the queue (this is due to the queue not saving socket addresses in the original framework)
+                    elif message["HEADER"] == "QUORUM-READ-REQ":
+                        data = pickle.dumps(json.dumps(self.bulletin_board)) # Convert dict to JSON for parsing
+                        udp_socket.sendto(data, client_address) # TODO change naming of client_address to avoid confusion
 
                     else: # Add to the queue when a message from another server is received
                         # Lock the message queue and append the message

@@ -1,1 +1,4 @@
 - Each time a leader crashes, the hosts simply shave off the highest ID node from the hosts list
+- Content of messages cannot have '%'
+- Content of messages should not escape the JSON format
+- Assume the JSON of the entire bulletin board fits into memory and can be sent over channels (this simplifies programming but is set up to be changed if need be)

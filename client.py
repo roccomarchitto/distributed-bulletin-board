@@ -57,22 +57,42 @@ class BulletinBoardClient():
 
 
 
-    def request_data(self):
+    def request_data(self, readOrChoose, id = 0):
         # Get the JSON of the bulletin board data, parse it into a Python dictionary, then send for front-end viewing
+        # readOrChoose is "choose" for a specific article (must supply ID) or "read" for a list of all the articles
+        # id is the ID of the post that should be read if "choose" is selected rather than "read"
         if self.consistency == "sequential":
             query = pickle.loads(self.udp_send("PRIMARY-READ", "", self.server_hostname, self.server_port))
             data = json.loads(query)
             if 'articles' in data: # The primary server has sent its data
-                self.view_data(data)
+                if readOrChoose == "read":
+                    self.view_data(data)
+                elif readOrChoose == "choose":
+                    self.view_article(data, id)
             elif 'primary' in data: # The correct primary has been sent back, so reflect this and resend request
                 print("New primary:",data)
                 self.primary_server_id = data['primary']
                 self.server_hostname = hosts[self.primary_server_id][0]
                 self.server_port = hosts[self.primary_server_id][1]
-                self.request_data()
+                self.request_data(readOrChoose, id)
+            else:
+                raise Exception("Corrupt data from server:",data)
+
+        # Quorum read requests
+        if self.consistency == "quorum":
+            query = pickle.loads(self.udp_send("QUORUM-READ", "", self.server_hostname, self.server_port))
+            print(query)
+            data = json.loads(query)
+            if 'articles' in data: # The quorum has sent its data
+                if readOrChoose == "read":
+                    self.view_data(data)
+                elif readOrChoose == "choose":
+                    self.view_article(data, id)
             else:
                 raise Exception("Corrupt data from server:",data)
     
+
+
     def send_data(self, postOrReply, content):
         # Send a POST or REPLY
         # Post format: post title%post content
@@ -97,6 +117,18 @@ class BulletinBoardClient():
             else:
                 raise Exception("Corrupt data from server:",data)
    
+
+
+    def view_article(self, data, id, depth = -1):
+        # Recursively descend the data, print out article if ID is found
+        if depth == -1:
+            self.view_article(data['articles'], id, depth+1)
+        else:
+            for article in data:
+                if str(article['id']) == str(id):
+                    print(f"ARTICLE:\n\n{article['title']}\n{'-'*len(article['title'])}\n\n{article['contents']}")
+                    return
+                self.view_article(article['replies'], id, depth+1)
 
 
 
@@ -157,12 +189,17 @@ class BulletinBoardClient():
 
 
 if __name__ == "__main__":
+    # TODO clean up total order multicast
     # NOTE - Some time wait is needed here for the servers to boot up
     client_instance = BulletinBoardClient(CONSISTENCY, hosts)
     print("Hosts are:",hosts)
     #client_instance.request_data()
-    client_instance.send_data("post","First post%Hello world")
+    client_instance.send_data("post","Test%Hello Test")
+    #client_instance.send_data("reply","3%Hello world")
     time.sleep(1)
-    client_instance.request_data()
-    client_instance.send_data("reply","1%Scoop")
-    client_instance.request_data()
+    client_instance.request_data("read")
+    #client_instance.request_data("choose", 16)
+    #client_instance.send_data("reply","16%This is working")
+    #client_instance.request_data("choose", 22)
+    #client_instance.send_data("reply","10%Scoop")
+    #client_instance.request_data()
