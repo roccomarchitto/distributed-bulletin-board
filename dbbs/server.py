@@ -49,9 +49,13 @@ class BulletinBoardServer():
         self.bulletin_board = ''
         self.latest_id = 0
         
-        sample_json = '{"articles": [{"id": 5,"title": "x","contents": "y","replies": [{"id": 6,"title": "xx","contents": "yy","replies": []}]}] }'
-        max_id_7_sample_json = '{"articles": [{"id": 5, "title": "x", "contents": "y", "replies": [{"id": 6, "title": "xx", "contents": "yy", "replies": []}]}, {"id": 1, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 2, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 3, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 4, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 5, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 6, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 7, "title": "Test", "contents": "Hello Test", "replies": []}]}'
-        print("Y",self.find_highest_id(json.loads(max_id_7_sample_json))) # TODO FIX THIS TODO TODO TODO TODO
+        #sample_json = '{"articles": [{"id": 1,"title": "x","contents": "y","replies": [{"id": 2,"title": "xx","contents": "yy","replies": []}]}] }'
+        sample_json = '{"articles": []}'
+        #max_id_7_sample_json = '{"articles": [{"id": 1, "title": "x", "contents": "y", "replies": [{"id": 3, "title": "xx", "contents": "yy", "replies": []}]}, {"id": 2, "title": "Test", "contents": "Hello Test", "replies": []}]}'
+        #max_id_7_sample_json = '{"articles": [{"id": 5, "title": "x", "contents": "y", "replies": [{"id": 6, "title": "xx", "contents": "yy", "replies": []}]}, {"id": 1, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 2, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 3, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 4, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 5, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 6, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 7, "title": "Test", "contents": "Hello Test", "replies": []}]}'
+        #if self.uid == 0: print("Y",self.find_highest_id(json.loads(max_id_7_sample_json))) # TODO FIX THIS TODO TODO TODO TODO
+        #exit()
+
         self.bulletin_board = json.loads(sample_json)
         print(self.bulletin_board)
         for i in self.bulletin_board['articles']:
@@ -60,8 +64,19 @@ class BulletinBoardServer():
         # len(bulletin_board['articles'][0]['replies']) is 1
 
         # Quorum consistency
-        self.read_quorum = [0, 2] # TODO choose a subset
-        self.write_quorum = [0, 2] # TODO choose a subset
+        # Need Nr + Nw > N, and Nw > N/2
+        # TODO seed random
+        Nr = 3
+        Nw = 3
+        shuffle_1 = hosts.copy()
+        random.shuffle(shuffle_1)
+        shuffle_2 = hosts.copy()
+        random.shuffle(shuffle_2)
+        self.read_quorum = shuffle_1[:Nr]
+        self.write_quorum = shuffle_2[:Nr]
+        print(self.read_quorum,'\n',self.write_quorum,'\n',hosts,'\n\n')
+        #self.read_quorum = [0, 1, 2] # TODO choose a subset
+        #self.write_quorum = [0, 2, 3] # TODO choose a subset
 
         # Start the listeners
         self.node_initiate()
@@ -150,9 +165,9 @@ class BulletinBoardServer():
                         data_update = message["MESSAGE"][1]
                         
                         # Multicast request to quorum, send ack to client
-                        for server_id in self.write_quorum:
-                            hostname = self.hosts[server_id][0]
-                            port = self.hosts[server_id][1]
+                        for [hostname, port] in self.write_quorum:
+                            #hostname = self.hosts[server_id][0]
+                            #port = self.hosts[server_id][1]
                             if message["HEADER"] == "QUORUM-REPLY-PRIMARY":
                                 header = 'QUORUM-REPLY-REQ'
                             else:
@@ -190,9 +205,9 @@ class BulletinBoardServer():
                         client_address = message["MESSAGE"]
                         # Multicast request to quorum, find most up to date (by ID) bulletin, then send back to the client
                         bulletins = []
-                        for server_id in self.read_quorum:
-                            hostname = self.hosts[server_id][0]
-                            port = self.hosts[server_id][1]
+                        for [hostname, port] in self.read_quorum:
+                            #hostname = self.hosts[server_id][0]
+                            #port = self.hosts[server_id][1]
                             msg =   {
                                             'HEADER': 'QUORUM-READ-REQ',
                                             'MESSAGE': '',
@@ -218,6 +233,8 @@ class BulletinBoardServer():
                             curr_max_bulletin = bulletins[0]
                             for bulletin in bulletins:
                                 highest_id = self.find_highest_id(json.loads(bulletin))
+                                if not highest_id:
+                                    highest_id = 0
                                 if highest_id > curr_max_id:
                                     #print("OVERRIDE",bulletin,curr_max_bulletin)
                                     curr_max_bulletin = bulletin
@@ -454,17 +471,20 @@ class BulletinBoardServer():
     def find_highest_id(self, current_section, depth = -1) -> None:
         # Recursively find the highest ID in the bulletin board
         if depth == -1:
-            return self.find_highest_id(current_section['articles'], depth+1)
+            m = self.find_highest_id(current_section['articles'], depth+1)
+            if m:
+                return max(m)
         else:
             id_list = []
             for article in current_section:
-                if not article['replies']:
-                    return current_section[0]['id']
-                id_list.append(int(self.find_highest_id(article['replies'], depth+1)))
-                id_list.append(int(current_section[0]['id']))
-            print("ID List:",id_list)
-            return max(id_list)
-                
+                if article:
+                    id_list.append(article['id'])
+                    child_ids = self.find_highest_id(article['replies'], depth+1)
+                    id_list += child_ids
+            return id_list
+            
+            
+            
 
 
     def udp_listener(self) -> None:

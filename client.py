@@ -201,11 +201,11 @@ if __name__ == "__main__":
     print("Hosts are:",hosts)
     #client_instance.request_data()
     client_instance.send_data("post","Test%Hello Test")
-    client_instance.send_data("reply","1%Hello Reply")
+    client_instance.send_data("reply","1%Hello Reply NEW!")
     #client_instance.send_data("reply","3%Hello world")
     time.sleep(1)
     client_instance.request_data("read")
-    client_instance.request_data("choose", 4)
+    client_instance.request_data("choose", 1)               # TODO - if choose goes out of bounds, is there an error?
     #client_instance.send_data("reply","16%This is working")
     #client_instance.request_data("choose", 22)
     #client_instance.send_data("reply","10%Scoop")
