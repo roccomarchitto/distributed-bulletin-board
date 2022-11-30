@@ -46,8 +46,9 @@ class BulletinBoardServer():
 
         # Bulletin board content variables
         self.bulletin_board = ''
+        self.latest_id = 0
         
-        sample_json = '{"articles": [{"id ": 5,"title": "x","contents": "y","replies": [{"id ": 6,"title": "xx","contents": "yy","replies": []}]}, {"hi":"ok"} ] }'
+        sample_json = '{"articles": [{"id": 5,"title": "x","contents": "y","replies": [{"id": 6,"title": "xx","contents": "yy","replies": []}]}] }'
         self.bulletin_board = json.loads(sample_json)
         print(self.bulletin_board)
         for i in self.bulletin_board['articles']:
@@ -232,7 +233,7 @@ class BulletinBoardServer():
                     data = json.dumps(self.bulletin_board) # Convert dict to JSON for parsing
                     data = pickle.dumps(data) # Encode JSON in byte form
                     udp_socket.sendto(data, client_address)
-                elif message["HEADER"] == "PRIMARY-REQUEST":
+                elif message["HEADER"] == "PRIMARY-READ":
                     """
                     These are requests made in sequential consistency mode. Send info back if leader, else send back leader, or spin wait until a leader is chosen.
                     """
@@ -250,9 +251,89 @@ class BulletinBoardServer():
                         data = json.dumps(data)
                         data = pickle.dumps(data)
                         udp_socket.sendto(data, client_address)
+                elif message["HEADER"] == "PRIMARY-POST":
+                    """
+                    These are posts made in sequential mode. Send ack if leader, else send back leader, or spin wait until a leader is chosen.
+                    """
+                    if (self.primary == self.uid):
+                        title = message['MESSAGE'].split('%')[0]
+                        body = message['MESSAGE'].split('%')[1]
+                        print("Appending post",title,":",body)
+                        #'{"articles": [{"id ": 5,"title": "x","contents": "y","replies": [{"id ": 6,"title": "xx","contents": "yy","replies": []}]}, {"hi":"ok"} ] }'
+                        new_article = dict()
+                        self.latest_id += 1
+                        new_article['id'] = self.latest_id
+                        new_article['title'] = title
+                        new_article['contents'] = body
+                        new_article['replies'] = []
+                        self.bulletin_board['articles'].append(new_article)
+                        data = dict()
+                        data['ACK'] = 1
+                        data = json.dumps(data)
+                        data = pickle.dumps(data)
+                        udp_socket.sendto(data, client_address)
+                    else:
+                        while self.primary == -1:
+                            continue
+                        # A leader is now chosen at this point; send its ID back to the client
+                        data = dict()
+                        data['primary'] = self.primary
+                        data = json.dumps(data)
+                        data = pickle.dumps(data)
+                        udp_socket.sendto(data, client_address)
+
+                elif message["HEADER"] == "PRIMARY-REPLY":
+                    """
+                    These are replies made in sequential mode. Send ack if leader, else send back leader, or spin wait until a leader is chosen.
+                    """
+                    if (self.primary == self.uid):
+                        original = message['MESSAGE'].split('%')[0] # The ID of the original post; we will reply to this ID
+                        body = message['MESSAGE'].split('%')[1] 
+                        print("Replying to post ID",original,":",body)
+                        #'{"articles": [{"id ": 5,"title": "x","contents": "y","replies": [{"id ": 6,"title": "xx","contents": "yy","replies": []}]}, {"hi":"ok"} ] }'
+                        new_article = dict()
+                        self.latest_id += 1
+                        new_article['id'] = self.latest_id
+                        new_article['title'] = "Reply to Article " + original
+                        new_article['contents'] = body
+                        new_article['replies'] = []
+
+                        # Need to find the 'replies' section of the post that has the desired ID, and append there
+                        self.append_reply(original, new_article, self.bulletin_board)
+
+                        #self.bulletin_board['articles'].append(new_article)
+
+                        data = dict()
+                        data['ACK'] = 1
+                        data = json.dumps(data)
+                        data = pickle.dumps(data)
+                        udp_socket.sendto(data, client_address)
+                    else:
+                        while self.primary == -1:
+                            continue
+                        # A leader is now chosen at this point; send its ID back to the client
+                        data = dict()
+                        data['primary'] = self.primary
+                        data = json.dumps(data)
+                        data = pickle.dumps(data)
+                        udp_socket.sendto(data, client_address) 
 
             finally:
                 udp_socket.close()
+
+    def append_reply(self, id, reply, current_section, depth = -1) -> None:
+        # Recursively append a reply to article ID id, to the self bulletin
+        if depth == -1:
+            self.append_reply(id, reply, self.bulletin_board['articles'], depth+1)
+        else:
+            for article in current_section:
+                if str(article['id']) == str(id):
+                    print("FOUND ARTICLE",article)
+                    article['replies'].append(reply)
+                    return
+                self.append_reply(id, reply, article['replies'], depth+1)
+              
+
 
 
     def udp_listener(self) -> None:

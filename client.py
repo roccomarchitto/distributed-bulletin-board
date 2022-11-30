@@ -45,6 +45,7 @@ class BulletinBoardClient():
         print(initial_message)
         
     
+
     def choose_server(self, hosts: List[List[str]]):
         """
         Apply a choice function to the list of possible servers; update hostname and port that this client sends to.
@@ -59,7 +60,7 @@ class BulletinBoardClient():
     def request_data(self):
         # Get the JSON of the bulletin board data, parse it into a Python dictionary, then send for front-end viewing
         if self.consistency == "sequential":
-            query = pickle.loads(self.udp_send("PRIMARY-REQUEST", "", self.server_hostname, self.server_port))
+            query = pickle.loads(self.udp_send("PRIMARY-READ", "", self.server_hostname, self.server_port))
             data = json.loads(query)
             if 'articles' in data: # The primary server has sent its data
                 self.view_data(data)
@@ -72,6 +73,32 @@ class BulletinBoardClient():
             else:
                 raise Exception("Corrupt data from server:",data)
     
+    def send_data(self, postOrReply, content):
+        # Send a POST or REPLY
+        # Post format: post title%post content
+        # Reply format: original post ID%reply content
+        # @param postOrReply (str): "post" to post and "reply" for reply
+        if self.consistency == "sequential":
+            print("Sending post",content,"to server")
+            if postOrReply == "post":
+                query = self.udp_send("PRIMARY-POST", content, self.server_hostname, self.server_port)
+            elif postOrReply == "reply":
+                query = self.udp_send("PRIMARY-REPLY", content, self.server_hostname, self.server_port)
+            data = pickle.loads(query)
+            data = json.loads(data)
+            if 'ACK' in data:
+                print("ack rec post")
+            elif 'primary' in data:
+                print("New primary:",data)
+                self.primary_server_id = data['primary']
+                self.server_hostname = hosts[self.primary_server_id][0]
+                self.server_port = hosts[self.primary_server_id][1]
+                self.send_data(postOrReply, content)
+            else:
+                raise Exception("Corrupt data from server:",data)
+   
+
+
 
     def view_data(self, data, depth = -1):
         if depth == -1:
@@ -80,13 +107,11 @@ class BulletinBoardClient():
             for article in data:
                 print('\t'*depth, end='')
                 if 'title' in article: # Needed because of testing purposes
-                    print(article['title'])
+                    print(article['id'],'  ',article['title'])
                 else:
                     print(article)
                 if 'replies' in article:
                     self.view_data(article['replies'], depth+1)
-        
-
 
 
 
@@ -135,4 +160,9 @@ if __name__ == "__main__":
     # NOTE - Some time wait is needed here for the servers to boot up
     client_instance = BulletinBoardClient(CONSISTENCY, hosts)
     print("Hosts are:",hosts)
+    #client_instance.request_data()
+    client_instance.send_data("post","First post%Hello world")
+    time.sleep(1)
+    client_instance.request_data()
+    client_instance.send_data("reply","1%Scoop")
     client_instance.request_data()
