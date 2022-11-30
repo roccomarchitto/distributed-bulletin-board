@@ -50,6 +50,8 @@ class BulletinBoardServer():
         self.latest_id = 0
         
         sample_json = '{"articles": [{"id": 5,"title": "x","contents": "y","replies": [{"id": 6,"title": "xx","contents": "yy","replies": []}]}] }'
+        max_id_7_sample_json = '{"articles": [{"id": 5, "title": "x", "contents": "y", "replies": [{"id": 6, "title": "xx", "contents": "yy", "replies": []}]}, {"id": 1, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 2, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 3, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 4, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 5, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 6, "title": "Test", "contents": "Hello Test", "replies": []}, {"id": 7, "title": "Test", "contents": "Hello Test", "replies": []}]}'
+        print("Y",self.find_highest_id(json.loads(max_id_7_sample_json))) # TODO FIX THIS TODO TODO TODO TODO
         self.bulletin_board = json.loads(sample_json)
         print(self.bulletin_board)
         for i in self.bulletin_board['articles']:
@@ -141,6 +143,47 @@ class BulletinBoardServer():
                 finally:
                     queue_mutex.release()
 
+                if message["HEADER"] == "QUORUM-WRITE-PRIMARY" or message["HEADER"] == "QUORUM-REPLY-PRIMARY":
+                    if (self.primary == self.uid):
+                        if DEBUG: print("Primary received quorum write/reply request:",message["MESSAGE"])
+                        client_address = message["MESSAGE"][0]
+                        data_update = message["MESSAGE"][1]
+                        
+                        # Multicast request to quorum, send ack to client
+                        for server_id in self.write_quorum:
+                            hostname = self.hosts[server_id][0]
+                            port = self.hosts[server_id][1]
+                            if message["HEADER"] == "QUORUM-REPLY-PRIMARY":
+                                header = 'QUORUM-REPLY-REQ'
+                            else:
+                                header = 'QUORUM-WRITE-REQ'
+                            msg =   {
+                                            'HEADER': header,
+                                            'MESSAGE': data_update,
+                                            'RECIPIENT': hostname,
+                                            'PORT': int(port),
+                                            'SENDERID': self.uid
+                                        }
+                            msg = pickle.dumps(msg)
+                            # Manually send over UDP (since sending requirements differ here from the udp_send function)
+                            with socket(AF_INET, SOCK_DGRAM) as udp_socket:
+                                try:
+                                    udp_socket.sendto(msg, (hostname, int(port))) # TODO timeout here?
+                                    reply, server_address = udp_socket.recvfrom(BUFFER_SIZE) # Block until reply received
+                                    print("Write quorum reply received")
+                                    # At this point, every write quorum server has posted its update, so send an ack back
+                                    data = dict()
+                                    data['ACK'] = 1
+                                    data = pickle.dumps(json.dumps(data))
+                                    print(data,client_address)
+                                    udp_socket.sendto(data, client_address)
+                                finally:
+                                    udp_socket.close()
+                            
+                            
+
+
+
                 if message["HEADER"] == "QUORUM-READ-PRIMARY":
                     if (self.primary == self.uid):
                         if DEBUG: print("Primary received quorum read request")
@@ -176,9 +219,10 @@ class BulletinBoardServer():
                             for bulletin in bulletins:
                                 highest_id = self.find_highest_id(json.loads(bulletin))
                                 if highest_id > curr_max_id:
-                                    print("OVERRIDE",bulletin,curr_max_bulletin)
+                                    #print("OVERRIDE",bulletin,curr_max_bulletin)
                                     curr_max_bulletin = bulletin
                                     curr_max_id = highest_id
+                                if DEBUG: print("Max ID:",curr_max_id)
                             udp_socket.sendto(pickle.dumps(curr_max_bulletin), client_address)
                         
                     else:
@@ -352,6 +396,8 @@ class BulletinBoardServer():
 
                         #self.bulletin_board['articles'].append(new_article)
 
+                        # TODO fix timeout/heartbeat values to ensure no interference; but also, test with interference
+
                         data = dict()
                         data['ACK'] = 1
                         data = json.dumps(data)
@@ -371,9 +417,17 @@ class BulletinBoardServer():
                 ### QUORUM CONSISTENCY CLIENT REQUESTS
 
                 elif message["HEADER"] == "QUORUM-READ":
-                    print("Quorum read on server requested")
-                    # Send a message to the primary -> primary sends a message back with data
+                    if DEBUG: print("Quorum read on server requested")
+                    # Send a message to the primary -> primary sends a message to client with data after reading from the quorum
                     self.udp_send("QUORUM-READ-PRIMARY", client_address, self.hosts[self.primary][0], self.hosts[self.primary][1])
+                elif message["HEADER"] == "QUORUM-POST":
+                    if DEBUG: print("Quorum post on server requested")
+                    # Forward post to the primary -> primary updates write quorum, then sends an ack to the client
+                    self.udp_send("QUORUM-WRITE-PRIMARY", (client_address, message["MESSAGE"]), self.hosts[self.primary][0], self.hosts[self.primary][1])
+                elif message["HEADER"] == "QUORUM-REPLY":
+                    if DEBUG: print("Quorum reply on server requested")
+                    self.udp_send("QUORUM-REPLY-PRIMARY", (client_address, message["MESSAGE"]), self.hosts[self.primary][0], self.hosts[self.primary][1])
+                    
 
 
 
@@ -439,6 +493,36 @@ class BulletinBoardServer():
                     elif message["HEADER"] == "QUORUM-READ-REQ":
                         data = pickle.dumps(json.dumps(self.bulletin_board)) # Convert dict to JSON for parsing
                         udp_socket.sendto(data, client_address) # TODO change naming of client_address to avoid confusion
+                    elif message["HEADER"] == "QUORUM-WRITE-REQ":
+                        # Post to the local bulletin
+                        data = message["MESSAGE"]
+                        title = data.split('%')[0]
+                        body = data.split('%')[1]
+                        new_article = dict()
+                        self.latest_id += 1
+                        new_article['id'] = self.latest_id
+                        new_article['title'] = title
+                        new_article['contents'] = body
+                        new_article['replies'] = []
+                        self.bulletin_board['articles'].append(new_article)
+                        # Reply with an ack
+                        udp_socket.sendto(b"ACK", client_address)
+                    elif message["HEADER"] == "QUORUM-REPLY-REQ":
+                        # Post the reply to the local bulletin
+                        original = message['MESSAGE'].split('%')[0] # The ID of the original post; we will reply to this ID
+                        body = message['MESSAGE'].split('%')[1] 
+                        new_article = dict()
+                        self.latest_id += 1
+                        new_article['id'] = self.latest_id
+                        new_article['title'] = "Reply to Article " + original
+                        new_article['contents'] = body
+                        new_article['replies'] = []
+                        # Need to find the 'replies' section of the post that has the desired ID, and append there
+                        self.append_reply(original, new_article, self.bulletin_board)
+                        # Reply with an ack
+                        udp_socket.sendto(b"ACK", client_address)
+
+
 
                     else: # Add to the queue when a message from another server is received
                         # Lock the message queue and append the message

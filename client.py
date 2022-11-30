@@ -98,24 +98,30 @@ class BulletinBoardClient():
         # Post format: post title%post content
         # Reply format: original post ID%reply content
         # @param postOrReply (str): "post" to post and "reply" for reply
-        if self.consistency == "sequential":
-            print("Sending post",content,"to server")
-            if postOrReply == "post":
+        #if self.consistency == "sequential":
+        print("Sending post",content,"to server")
+        if postOrReply == "post":
+            if self.consistency == "sequential":
                 query = self.udp_send("PRIMARY-POST", content, self.server_hostname, self.server_port)
-            elif postOrReply == "reply":
+            elif self.consistency == "quorum":
+                query = self.udp_send("QUORUM-POST", content, self.server_hostname, self.server_port)
+        elif postOrReply == "reply":
+            if self.consistency == "sequential":
                 query = self.udp_send("PRIMARY-REPLY", content, self.server_hostname, self.server_port)
-            data = pickle.loads(query)
-            data = json.loads(data)
-            if 'ACK' in data:
-                print("ack rec post")
-            elif 'primary' in data:
-                print("New primary:",data)
-                self.primary_server_id = data['primary']
-                self.server_hostname = hosts[self.primary_server_id][0]
-                self.server_port = hosts[self.primary_server_id][1]
-                self.send_data(postOrReply, content)
-            else:
-                raise Exception("Corrupt data from server:",data)
+            elif self.consistency == "quorum":
+                query = self.udp_send("QUORUM-REPLY", content, self.server_hostname, self.server_port)
+        data = pickle.loads(query)
+        data = json.loads(data)
+        if 'ACK' in data:
+            print("ack rec post")
+        elif 'primary' in data:
+            print("New primary:",data)
+            self.primary_server_id = data['primary']
+            self.server_hostname = hosts[self.primary_server_id][0]
+            self.server_port = hosts[self.primary_server_id][1]
+            self.send_data(postOrReply, content)
+        else:
+            raise Exception("Corrupt data from server:",data)
    
 
 
@@ -141,7 +147,7 @@ class BulletinBoardClient():
                 if 'title' in article: # Needed because of testing purposes
                     print(article['id'],'  ',article['title'])
                 else:
-                    print(article)
+                    print("Foreign format:",article)
                 if 'replies' in article:
                     self.view_data(article['replies'], depth+1)
 
@@ -195,10 +201,11 @@ if __name__ == "__main__":
     print("Hosts are:",hosts)
     #client_instance.request_data()
     client_instance.send_data("post","Test%Hello Test")
+    client_instance.send_data("reply","1%Hello Reply")
     #client_instance.send_data("reply","3%Hello world")
     time.sleep(1)
     client_instance.request_data("read")
-    #client_instance.request_data("choose", 16)
+    client_instance.request_data("choose", 4)
     #client_instance.send_data("reply","16%This is working")
     #client_instance.request_data("choose", 22)
     #client_instance.send_data("reply","10%Scoop")
