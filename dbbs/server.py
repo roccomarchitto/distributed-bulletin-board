@@ -78,6 +78,11 @@ class BulletinBoardServer():
         #self.read_quorum = [0, 1, 2] # TODO choose a subset
         #self.write_quorum = [0, 2, 3] # TODO choose a subset
 
+        # Read-your-writes consistency
+        self.acks = 0
+
+        # TODO TODO TODO ensure total order multicast is sending updates to replicas (quorums were out of date when switching from sequential to quorum)
+
         # Start the listeners
         self.node_initiate()
 
@@ -157,6 +162,7 @@ class BulletinBoardServer():
                     message = self.message_queue.pop(0)
                 finally:
                     queue_mutex.release()
+
 
                 if message["HEADER"] == "QUORUM-WRITE-PRIMARY" or message["HEADER"] == "QUORUM-REPLY-PRIMARY":
                     if (self.primary == self.uid):
@@ -301,7 +307,7 @@ class BulletinBoardServer():
             port (int): The port of the recipient
         """
 
-        latency = random.random()*0.1
+        latency = 0#random.random()*0.1
         time.sleep(latency) # TODO client-sending latencies
         # TODO BUG - when latency is set to 4, two leaders may be elected at the same time due to atomicity concerns (possible assumption?)
 
@@ -343,6 +349,14 @@ class BulletinBoardServer():
                     data = json.dumps(self.bulletin_board) # Convert dict to JSON for parsing
                     data = pickle.dumps(data) # Encode JSON in byte form
                     udp_socket.sendto(data, client_address)
+                elif message["HEADER"] == "RW-READ":
+                    """
+                    Read requests made in read-your-writes mode go here. Always send back the local copy.
+                    """
+                    data = pickle.dumps(json.dumps(self.bulletin_board))
+                    udp_socket.sendto(data, client_address)
+                    
+
                 elif message["HEADER"] == "PRIMARY-READ":
                     """
                     These are requests made in sequential consistency mode. Send info back if leader, else send back leader, or spin wait until a leader is chosen.
@@ -382,6 +396,31 @@ class BulletinBoardServer():
                         data = json.dumps(data)
                         data = pickle.dumps(data)
                         udp_socket.sendto(data, client_address)
+                        
+                        """ # TODO failure mode - as the primary is backing up, there could be lost messages, etc.
+                        for [hostname, port] in (self.hosts[:self.uid] + self.hosts[(self.uid+1):]):
+                            if mode == "post":
+                                header = 'RW-WRITE-LOCALLY' # Signals the receiver should write locally, then send back an ack
+                            else:
+                                header = 'RW-REPLY-LOCALLY' # Signals the receiver should add a local reply, then send back an ack
+                            msg =   {
+                                            'HEADER': header,
+                                            'MESSAGE': message["MESSAGE"],
+                                            'RECIPIENT': hostname,
+                                            'PORT': int(port),
+                                            'SENDERID': self.uid
+                                    }
+                            msg = pickle.dumps(msg)
+                            # Manually send over UDP (since sending requirements differ here from the udp_send function)
+                            with socket(AF_INET, SOCK_DGRAM) as udp_socket:
+                                try:
+                                    udp_socket.sendto(msg, (hostname, int(port))) # TODO timeout here?
+                                    reply, server_address = udp_socket.recvfrom(BUFFER_SIZE) # Block until reply received
+                                    print("RW replica local ack received")
+                                finally:
+                                    udp_socket.close()
+                        """
+
                     else:
                         while self.primary == -1:
                             continue
@@ -391,6 +430,76 @@ class BulletinBoardServer():
                         data = json.dumps(data)
                         data = pickle.dumps(data)
                         udp_socket.sendto(data, client_address)
+
+
+                elif message["HEADER"] == "RW-POST" or message["HEADER"] == "RW-REPLY":
+                        """
+                        These are posts made in read-your-writes mode. Propagate to other servers, get acks, then return.
+                        """
+                        if message["HEADER"] == "RW-POST":
+                            mode = "post"
+                        else:
+                            mode = "reply"
+                        print("RW post/reply received.")
+                        # First parse the post
+                        title = message['MESSAGE'].split('%')[0]
+                        body = message['MESSAGE'].split('%')[1]
+                        print("Appending post",title,":",body)
+                        new_article = dict()
+                        self.latest_id += 1
+                        new_article['id'] = self.latest_id
+                        new_article['title'] = title
+                        new_article['contents'] = body
+                        new_article['replies'] = []
+                        # Post the message to the local bulletin board
+                        if mode == "post":
+                            print("Post being made locally")
+                            self.bulletin_board['articles'].append(new_article)
+                        elif mode == "reply":
+                            original = message['MESSAGE'].split('%')[0] # The ID of the original post; we will reply to this ID
+                            body = message['MESSAGE'].split('%')[1]
+                            new_article['title'] = "Reply to Article " + original
+                            self.append_reply(original, new_article, self.bulletin_board)
+                            print("Reply posted locally")
+                        
+                        # Send post to other servers
+                        data = pickle.dumps(json.dumps(new_article))
+                        # Now broadcast to other replica servers, wait to get all N acks, then finally send an ack back to the client
+                        
+                        for [hostname, port] in (self.hosts[:self.uid] + self.hosts[(self.uid+1):]):
+                            if mode == "post":
+                                header = 'RW-WRITE-LOCALLY' # Signals the receiver should write locally, then send back an ack
+                            else:
+                                header = 'RW-REPLY-LOCALLY' # Signals the receiver should add a local reply, then send back an ack
+                            msg =   {
+                                            'HEADER': header,
+                                            'MESSAGE': message["MESSAGE"],
+                                            'RECIPIENT': hostname,
+                                            'PORT': int(port),
+                                            'SENDERID': self.uid
+                                    }
+                            msg = pickle.dumps(msg)
+                            # Manually send over UDP (since sending requirements differ here from the udp_send function)
+                            with socket(AF_INET, SOCK_DGRAM) as udp_socket:
+                                try:
+                                    udp_socket.sendto(msg, (hostname, int(port))) # TODO timeout here?
+                                    reply, server_address = udp_socket.recvfrom(BUFFER_SIZE) # Block until reply received
+                                    print("RW replica local ack received")
+                                finally:
+                                    udp_socket.close()
+                        print("Server has all of its RW acks, sending ack back to client to complete transaction")
+                        # Now send an ack back to the client
+                        data = dict()
+                        data['ACK'] = 1
+                        data = json.dumps(data)
+                        data = pickle.dumps(data)
+                        with socket(AF_INET, SOCK_DGRAM) as udp_socket:
+                            try:
+                                udp_socket.sendto(data, client_address)
+                            finally:
+                                udp_socket.close()
+                        
+
 
                 elif message["HEADER"] == "PRIMARY-REPLY":
                     """
@@ -444,6 +553,7 @@ class BulletinBoardServer():
                 elif message["HEADER"] == "QUORUM-REPLY":
                     if DEBUG: print("Quorum reply on server requested")
                     self.udp_send("QUORUM-REPLY-PRIMARY", (client_address, message["MESSAGE"]), self.hosts[self.primary][0], self.hosts[self.primary][1])
+                
                     
 
 
@@ -503,12 +613,45 @@ class BulletinBoardServer():
                         # Spawn a client handler thread
                         client_handler = Thread(target=self.client_handler, args=(client_address,message), name=f"client_handler{client_address}") # TODO does this allow for multiple threads? Are the non unique names a problem?
                         client_handler.start()
-                    
+
                     elif message["HEADER"] == "HEARTBEAT":
                         # Update the heartbeat immediately, don't send to message queue
                         self.last_heartbeat = time.time()
                         #print("H @",self.uid,time.time())
                     
+                    elif message["HEADER"] == "RW-WRITE-LOCALLY":
+                        # These are the messages all other replicas get in RW consistency mode
+                        # Post to the local bulletin
+                        data = message["MESSAGE"]
+                        print(data)
+                        title = data.split('%')[0]
+                        body = data.split('%')[1]
+                        new_article = dict()
+                        self.latest_id += 1
+                        new_article['id'] = self.latest_id
+                        new_article['title'] = title
+                        new_article['contents'] = body
+                        new_article['replies'] = []
+                        self.bulletin_board['articles'].append(new_article)
+                        # Reply with an ack
+                        udp_socket.sendto(b"ACK", client_address)
+                    elif message["HEADER"] == "RW-REPLY-LOCALLY":
+                        # This section is triggered if a replica must create a backup of a reply in RW mode
+                        # First parse the reply contents and append locally as a reply
+                        original = message['MESSAGE'].split('%')[0] # The ID of the original post; we will reply to this ID
+                        body = message['MESSAGE'].split('%')[1] 
+                        new_article = dict()
+                        self.latest_id += 1
+                        new_article['id'] = self.latest_id
+                        new_article['title'] = "Reply to Article " + original
+                        new_article['contents'] = body
+                        new_article['replies'] = []
+                        # Need to find the 'replies' section of the post that has the desired ID, and append there
+                        self.append_reply(original, new_article, self.bulletin_board)
+                        # Reply with an ack
+                        udp_socket.sendto(b"ACK", client_address)
+
+
                     # Quorum requests are handled here rather than in the queue (this is due to the queue not saving socket addresses in the original framework)
                     elif message["HEADER"] == "QUORUM-READ-REQ":
                         data = pickle.dumps(json.dumps(self.bulletin_board)) # Convert dict to JSON for parsing

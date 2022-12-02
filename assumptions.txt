@@ -3,3 +3,15 @@
 - Content of messages should not escape the JSON format
 - Assume the JSON of the entire bulletin board fits into memory and can be sent over channels (this simplifies programming but is set up to be changed if need be)
 - Note that in some situations, if a message doesn't get to a server in time, then read-your-writes may appear broken, but if the write completes, it will always succeed
+
+
+FAILURE POINTS
+--------------
+- Propagation lag
+- In general, omission, Byzantine, and crash failures
+- Server crashes can cause issues during downtime
+- Switching between consistency modes doesn't work
+- Concurrency issues might exist - messages might get mixed up (still testing this)
+
+
+NEED TO TEST CONCURRENCY ISSUES

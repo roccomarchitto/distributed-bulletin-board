@@ -210,7 +210,7 @@ if __name__ == "__main__":
     print("Hosts are:",hosts)
     #client_instance.request_data()
     client_instance.choose_server(3)
-    client_instance.send_data("post","Test%Hello Test")
+    #client_instance.send_data("post","Test2%Hello Test")
     #client_instance.send_data("reply","1%Hello Reply NEW!")
     #client_instance.send_data("reply","3%Hello world")
     #time.sleep(1)
