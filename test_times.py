@@ -12,6 +12,7 @@ import argparse
 import pickle
 import json
 import time
+import random
 from socket import *
 
 BUFFER_SIZE = 4096
@@ -199,16 +200,15 @@ class BulletinBoardClient():
 
             
 
-
-
 if __name__ == "__main__":
     client_instance = BulletinBoardClient(CONSISTENCY, hosts)
-    client_instance.choose_server(4)
-   
-    client_instance.send_data("post","Test%Hello Test")
-    client_instance.send_data("reply","1%Hello Reply!")
-    client_instance.send_data("reply","2%Hello Reply!")
-    client_instance.send_data("reply","3%Hello Reply!")
-    client_instance.send_data("reply","4%Hello Reply!")
-    client_instance.request_data("read") 
- 
+    client_instance.choose_server(random.choice([0,1,2,3,4]))
+    
+    start = time.time() # Move the timing function interiors to time different things
+    #client_instance.send_data("post","Example title%This is an example post")
+    client_instance.request_data("read")
+    elapsed = abs(time.time()-start)
+    print("Send took",elapsed,"s")
+    
+
+    

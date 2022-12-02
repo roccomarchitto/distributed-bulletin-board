@@ -15,13 +15,13 @@ import time
 from socket import *
 
 BUFFER_SIZE = 4096
+DEBUG = False
 
 # Parse arguments from the command line
 parser = argparse.ArgumentParser()
 parser.add_argument("consistency", help="the consistency method requested by this client: sequential, quorum, or rw")
 args = parser.parse_args()
 CONSISTENCY = args.consistency
-# TODO - check consistency type, check other args in other places, have tests for these
 
 primary_server_id = 0 # For sequential consistency primary-backup protocol
 
@@ -35,26 +35,24 @@ with open("./hosts.txt","r") as f:
 
 class BulletinBoardClient():
     def __init__(self, consistency: str, hosts: List[List[str]]):
-        print("Client started with consistency mode:",consistency)
+        if DEBUG: print("Client started with consistency mode:",consistency)
         self.server_hostname = ''
         self.server_port = ''
         self.choose_server(0)
         self.consistency = consistency
-        print("Choosing server", self.server_hostname, self.server_port)
+        if DEBUG: print("Choosing server", self.server_hostname, self.server_port)
         initial_message = self.udp_send("CONN", "", self.server_hostname, self.server_port)
-        print(initial_message)
+        if DEBUG: print(initial_message)
         
     
 
     def choose_server(self, server_id: int):
         """
         Apply a choice function to the list of possible servers; update hostname and port that this client sends to.
-        # TODO FIX SERVER
         """
         server_choice = hosts[server_id]
         self.server_hostname = server_choice[0]
         self.server_port = server_choice[1]
-        # TODO randomize
 
 
 
@@ -71,7 +69,7 @@ class BulletinBoardClient():
                 elif readOrChoose == "choose":
                     self.view_article(data, id)
             elif 'primary' in data: # The correct primary has been sent back, so reflect this and resend request
-                print("New primary:",data)
+                if DEBUG: print("New primary:",data)
                 self.primary_server_id = data['primary']
                 self.server_hostname = hosts[self.primary_server_id][0]
                 self.server_port = hosts[self.primary_server_id][1]
@@ -86,7 +84,7 @@ class BulletinBoardClient():
             elif self.consistency == "rw":
                 query = pickle.loads(self.udp_send("RW-READ", "", self.server_hostname, self.server_port))
 
-            print(query)
+            if DEBUG: print(query)
             data = json.loads(query)
             if 'articles' in data: # The quorum has sent its data
                 if readOrChoose == "read":
@@ -104,7 +102,7 @@ class BulletinBoardClient():
         # Reply format: original post ID%reply content
         # @param postOrReply (str): "post" to post and "reply" for reply
         #if self.consistency == "sequential":
-        print("Sending post",content,"to server")
+        if DEBUG: print("Sending post",content,"to server")
         if postOrReply == "post":
             if self.consistency == "sequential":
                 query = self.udp_send("PRIMARY-POST", content, self.server_hostname, self.server_port)
@@ -122,9 +120,9 @@ class BulletinBoardClient():
         data = pickle.loads(query)
         data = json.loads(data)
         if 'ACK' in data:
-            print("ack rec post")
+            pass
         elif 'primary' in data:
-            print("New primary:",data)
+            if DEBUG: print("New primary:",data)
             self.primary_server_id = data['primary']
             self.server_hostname = hosts[self.primary_server_id][0]
             self.server_port = hosts[self.primary_server_id][1]
@@ -141,7 +139,7 @@ class BulletinBoardClient():
         else:
             for article in data:
                 if str(article['id']) == str(id):
-                    print(f"ARTICLE:\n\n{article['title']}\n{'-'*len(article['title'])}\n\n{article['contents']}")
+                    print(f"\n---------{'-'*len(article['title'])}\nARTICLE: {article['title']}\n---------{'-'*len(article['title'])}\n{article['contents']}")
                     return
                 self.view_article(article['replies'], id, depth+1)
 
@@ -149,7 +147,9 @@ class BulletinBoardClient():
 
     def view_data(self, data, depth = -1):
         if depth == -1:
+            print("\n---------------\nArticle Listing\n---------------")
             self.view_data(data['articles'], depth+1)
+            print("") # Add a newline
         else:
             for article in data:
                 print('\t'*depth, end='')
@@ -190,7 +190,6 @@ class BulletinBoardClient():
                 udp_socket.sendto(message, (recipient, int(port)))
                 
                 # Now wait (with timeout) for a reply
-                # TODO timeout
                 reply, server_address = udp_socket.recvfrom(BUFFER_SIZE)
                 #print("Client received reply:",reply)
                 return reply
@@ -202,25 +201,11 @@ class BulletinBoardClient():
 
 
 
-
 if __name__ == "__main__":
-    # TODO clean up total order multicast
-    # NOTE - Some time wait is needed here for the servers to boot up
     client_instance = BulletinBoardClient(CONSISTENCY, hosts)
-    print("Hosts are:",hosts)
-    #client_instance.request_data()
-    client_instance.choose_server(3)
+    client_instance.choose_server(4)
+   
     client_instance.send_data("post","Test%Hello Test")
-    #client_instance.send_data("reply","1%Hello Reply NEW!")
-    #client_instance.send_data("reply","3%Hello world")
-    #time.sleep(1)
-    #client_instance.choose_server(1)
-    client_instance.request_data("read") # TODO - RW READING
-    client_instance.request_data("choose", 4)               # TODO - if choose goes out of bounds, is there an error?
-    #client_instance.send_data("reply","16%This is working")
-    #client_instance.request_data("choose", 22)
-    #client_instance.send_data("reply","10%Scoop")
-    #client_instance.request_data()
-    # TODO - does switching consistency modes break behavior?
-
-    
+    client_instance.send_data("reply","1%Hello Reply!")
+    client_instance.request_data("read") 
+    client_instance.request_data("choose", 1)   

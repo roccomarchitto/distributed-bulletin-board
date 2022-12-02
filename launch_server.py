@@ -21,6 +21,6 @@ with open("./hosts.txt","r") as f:
         hosts.append([line[0],line[1]])
 
 if __name__ == "__main__":
-    print(uid,":",hosts)
+    #print(uid,":",hosts)
     # Launch a BulletinBoardServer instance
     server_instance = BulletinBoardServer(uid, hosts)
